@@ -12,10 +12,11 @@ import shapely
 import xarray as xr
 import xvec
 from joblib import Parallel, delayed
-from openeo_pg_parser_networkx.pg_schema import (TemporalInterval,
-                                                 TemporalIntervals)
+from openeo_pg_parser_networkx.pg_schema import TemporalInterval, TemporalIntervals
 from openeo_processes_dask.process_implementations.data_model import (
-    RasterCube, VectorCube)
+    RasterCube,
+    VectorCube,
+)
 from openeo_processes_dask.process_implementations.exceptions import (
     DimensionNotAvailable,
     TooManyDimensions,
@@ -110,66 +111,6 @@ def aggregate_temporal_period(
     )
 
 
-<<<<<<< HEAD
-=======
-def _aggregate_geometry(
-    data: RasterCube,
-    geom,
-    transform,
-    reducer: Callable,
-):
-    data_dims = list(data.dims)
-    y_dim = data.openeo.y_dim
-    x_dim = data.openeo.x_dim
-    t_dim = data.openeo.temporal_dims
-    t_dim = None if len(t_dim) == 0 else t_dim[0]
-    b_dim = data.openeo.band_dims
-    b_dim = None if len(b_dim) == 0 else b_dim[0]
-
-    y_dim_size = data.sizes[y_dim]
-    x_dim_size = data.sizes[x_dim]
-
-    # Create a GeoSeries from the geometry
-    geo_series = gpd.GeoSeries(geom)
-
-    # Convert the GeoSeries to a GeometryArray
-    geometry_array = geo_series.geometry.array
-
-    mask = rasterio.features.geometry_mask(
-        geometry_array, out_shape=(y_dim_size, x_dim_size), transform=transform
-    )
-    # data is (band,times,y,x)                                        # RISE data_dims = ['bands', 't', 'y', 'x']
-                                                                      # RISE                0       1    2    3
-    # Maks gets default (band, y,times,x)                             # RISE see below:
-    if t_dim is not None:
-        # mask = np.expand_dims(mask, axis=data_dims.index(t_dim))    # -> (36,1,38) (y,time,x) Borde varit 0 här ?
-        mask = np.expand_dims(mask, axis=0)                           # -> RISE (1,36,38) (time,y,x) add dummy dimension to the left
-    if b_dim is not None: 
-        #mask = np.expand_dims(mask, axis=data_dims.index(b_dim))     # -> (1,36,1,38) (band,y,time,x) Borde varit 0 här också (vilket det är)
-        mask = np.expand_dims(mask, axis=0)                           # -> RISE (1, 1,36,38) (time,y,x) add dummy dimension to the left
- 
-    # Do above instead pf reshaped_mask = np.transpose(mask, (0, 2, 1, 3))                   # RISE
-    masked_data = data * mask
-    del mask, data
-    gc.collect()                                                      # RISE
-
-    positional_parameters = {"data": 0}
-
-    stat_within_polygon = masked_data.reduce(
-        reducer,
-        axis=(data_dims.index(y_dim), data_dims.index(x_dim)),
-        keep_attrs=True,
-        ignore_nodata=True,
-        positional_parameters=positional_parameters,
-    )
-    result = stat_within_polygon.values
-
-    del masked_data, stat_within_polygon
-    gc.collect()
-    return result.T
-
-
->>>>>>> 1e6a4fa (aggregate spatial now emits better JSON with data in data_vars)
 def aggregate_spatial(
     data: RasterCube,
     geometries,
@@ -222,7 +163,6 @@ def aggregate_spatial(
     gdf = gdf.to_crs(data.rio.crs)
     geometries = gdf.geometry.values
 
-<<<<<<< HEAD
     positional_parameters = {"data": 0}
     vec_cube = data.xvec.zonal_stats(
         geometries,
@@ -232,81 +172,4 @@ def aggregate_spatial(
         stats=reducer,
         positional_parameters=positional_parameters,
     )
-=======
-    geometry_chunks = [
-        geometries[i : i + chunk_size] for i in range(0, len(geometries), chunk_size)
-    ]
-
-    computed_results = []
-    logger.info(f"Running aggregate_spatial process")
-    try:
-        for i, chunk in enumerate(geometry_chunks):
-            # Create a list of delayed objects for the current chunk
-            chunk_results = Parallel(n_jobs=-1)(
-                delayed(_aggregate_geometry)(
-                    data, geom, transform=transform, reducer=reducer
-                )
-                for geom in chunk
-            )
-            computed_results.extend(chunk_results)
-    except Exception as e:
-        logger.debug(f"Running process failed at {(i+1) *2} geometry")
-
-    logger.info(f"Finish aggregate_spatial process for {len(geometries)}")
-
-    final_results = np.stack(computed_results)
- 
-    del chunk_results, geometry_chunks, computed_results
-    gc.collect()
-
-    df = pd.DataFrame()
-    keys_items = {}
-    if b_dim: 
-        for idx, b in enumerate(data[b_dim].values):
-            columns = []
-            if t_dim:
-                for t in range(len(data[t_dim])):
-                    columns.append(f"{b}_time{t+1}")
-                aggregated_data = final_results[:, idx, :]
-            else:
-                columns.append(f"{b}")
-                aggregated_data = final_results[:, idx]
-
-            keys_items[b] = columns
-
-            # Create a new DataFrame with the current data and columns
-            aggregated_data = final_results.reshape(1, -1)                   # RISE
-            band_df = pd.DataFrame(aggregated_data, columns=columns)  
-            # Concatenate the new DataFrame with the existing DataFrame
-            df = pd.concat([df, band_df], axis=1)
-    else:  # There are no band but possibly a time dimension # RISE (whole else block)
-        columns = []
-        if t_dim:
-            for t in range(len(data[t_dim])):
-                columns.append(f"data_time{t+1}")
-        else:
-            columns.append(f"data")
-            aggregated_data = final_results[:, idx]
-        keys_items['values'] = columns 
-        aggregated_data = final_results.reshape(1, -1)                   # RISE
-        df = pd.DataFrame(aggregated_data, columns=columns)
-
-    df = gpd.GeoDataFrame(df, geometry=gdf.geometry)
-
-    data_vars = {}
-    for key in keys_items.keys():
-        data_vars[key] = (["geometry", t_dim], df[keys_items[key]])
-
-    ## Create VectorCube
-    if t_dim:
-        times = list(data[t_dim].values)
-        vec_cube = xr.Dataset(
-            data_vars=data_vars, coords={"geometry": df.geometry, t_dim: times}
-        ).xvec.set_geom_indexes("geometry", crs=df.crs)
-    else:
-        vec_cube = xr.Dataset(
-            data_vars=data_vars, coords=dict(geometry=df.geometry)
-        ).xvec.set_geom_indexes("geometry", crs=df.crs)
-
->>>>>>> 1e6a4fa (aggregate spatial now emits better JSON with data in data_vars)
     return vec_cube
